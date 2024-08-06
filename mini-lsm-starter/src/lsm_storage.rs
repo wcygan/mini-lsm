@@ -3,11 +3,12 @@
 use std::collections::HashMap;
 use std::ops::Bound;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
+use std::sync::Arc;
 
 use anyhow::Result;
 use bytes::Bytes;
+use log::info;
 use parking_lot::{Mutex, MutexGuard, RwLock};
 
 use crate::block::Block;
@@ -279,7 +280,26 @@ impl LsmStorageInner {
 
     /// Get a key from the storage. In day 7, this can be further optimized by using a bloom filter.
     pub fn get(&self, _key: &[u8]) -> Result<Option<Bytes>> {
-        Ok(self.state.read().memtable.get(_key))
+        let snapshot = {
+            let guard = self.state.read();
+            Arc::clone(&guard)
+        }; // drop global lock here
+
+        let value = snapshot
+            .memtable
+            .get(_key)
+            .or_else(|| {
+                snapshot
+                    .imm_memtables
+                    .iter()
+                    .rev()
+                    .find_map(|imm| imm.get(_key))
+            })
+            .filter(|bytes| !bytes.is_empty());
+
+        info!("[GET] key {:?} => {:?}", _key, value);
+
+        Ok(value)
     }
 
     /// Write a batch of data into the storage. Implement in week 2 day 7.
@@ -295,21 +315,22 @@ impl LsmStorageInner {
     /// Remove a key from the storage by writing an empty value.
     pub fn delete(&self, _key: &[u8]) -> Result<()> {
         // An empty slice (a "tombstone") is written to the storage to delete the key
-        self.write(_key, &[])
+        self.write(_key, b"")
     }
 
     fn write(&self, _key: &[u8], _value: &[u8]) -> Result<()> {
+        info!("[WRITE] {:?}, value: {:?}", _key, _value);
+
         // Write the key-value pair into the memtable
         self.state.read().memtable.put(_key, _value)?;
 
-        // Next, check if the memtable should be frozen.
-        // Follow the test, test, set pattern to avoid freezing an empty memtable
+        // Check if the memtable should be frozen (and then freeze it).
         if self.should_freeze(_key, _value) {
-            // (1) Test
             let state = self.state_lock.lock();
+            let guard = self.state.read();
             if self.should_freeze(_key, _value) {
-                // (2) Test again
-                self.force_freeze_memtable(&state)?; // (3) Set
+                drop(guard);
+                self.force_freeze_memtable(&state)?;
             }
         }
 
@@ -338,6 +359,8 @@ impl LsmStorageInner {
 
     /// Force freeze the current memtable to an immutable memtable
     pub fn force_freeze_memtable(&self, _state_lock_observer: &MutexGuard<'_, ()>) -> Result<()> {
+        info!("Freezing memtable");
+
         let memtable_id = self.next_sst_id();
         let memtable = if self.options.enable_wal {
             Arc::new(MemTable::create_with_wal(
