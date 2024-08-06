@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 use std::ops::Bound;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 
 use anyhow::Result;
 use bytes::Bytes;
@@ -289,12 +289,31 @@ impl LsmStorageInner {
 
     /// Put a key-value pair into the storage by writing into the current memtable.
     pub fn put(&self, _key: &[u8], _value: &[u8]) -> Result<()> {
-        self.state.read().memtable.put(_key, _value)
+        self.write(_key, _value)
     }
 
     /// Remove a key from the storage by writing an empty value.
     pub fn delete(&self, _key: &[u8]) -> Result<()> {
-        self.state.read().memtable.put(_key, &[])
+        // An empty slice (a "tombstone") is written to the storage to delete the key
+        self.write(_key, &[])
+    }
+
+    fn write(&self, _key: &[u8], _value: &[u8]) -> Result<()> {
+        // Write the key-value pair into the memtable
+        self.state.read().memtable.put(_key, _value)?;
+
+        // Next, check if the memtable should be frozen.
+        // Follow the test, test, set pattern to avoid freezing an empty memtable
+        if self.should_freeze(_key, _value) {
+            // (1) Test
+            let state = self.state_lock.lock();
+            if self.should_freeze(_key, _value) {
+                // (2) Test again
+                self.force_freeze_memtable(&state)?; // (3) Set
+            }
+        }
+
+        Ok(())
     }
 
     pub(crate) fn path_of_sst_static(path: impl AsRef<Path>, id: usize) -> PathBuf {
@@ -319,7 +338,19 @@ impl LsmStorageInner {
 
     /// Force freeze the current memtable to an immutable memtable
     pub fn force_freeze_memtable(&self, _state_lock_observer: &MutexGuard<'_, ()>) -> Result<()> {
-        unimplemented!()
+        let memtable_id = self.next_sst_id();
+        let memtable = if self.options.enable_wal {
+            Arc::new(MemTable::create_with_wal(
+                memtable_id,
+                self.path_of_wal(memtable_id),
+            )?)
+        } else {
+            Arc::new(MemTable::create(memtable_id))
+        };
+
+        self.freeze_and_swap_memtables(memtable)?;
+
+        Ok(())
     }
 
     /// Force flush the earliest-created immutable memtable to disk
@@ -339,5 +370,36 @@ impl LsmStorageInner {
         _upper: Bound<&[u8]>,
     ) -> Result<FusedIterator<LsmIterator>> {
         unimplemented!()
+    }
+
+    /// Once the memtable reaches the target size, it should be frozen
+    fn should_freeze(&self, _key: &[u8], _value: &[u8]) -> bool {
+        let insert_size = _key.len() + _value.len();
+        let approximate_size = self.state.read().memtable.approximate_size();
+        let target_sst_size = self.options.target_sst_size;
+
+        // the target size is reached when the approximate size
+        // plus the insert size is greater than the target size
+        approximate_size + insert_size > target_sst_size
+    }
+
+    fn freeze_and_swap_memtables(&self, new_memtable: Arc<MemTable>) -> Result<()> {
+        // Lock the state & begin the swap
+        let mut lock = self.state.write();
+
+        // Swap the snapshot's current memtable with the new one.
+        let mut snapshot = lock.as_ref().clone();
+        let old_memtable = std::mem::replace(&mut snapshot.memtable, new_memtable);
+
+        // Add the memtable to the snapshot's immutable memtables.
+        snapshot.imm_memtables.insert(0, old_memtable.clone());
+
+        // Use the snapshot as the new state.
+        *lock = Arc::new(snapshot);
+
+        drop(lock);
+        old_memtable.sync_wal()?;
+
+        Ok(())
     }
 }

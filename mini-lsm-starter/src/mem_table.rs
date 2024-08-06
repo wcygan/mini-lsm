@@ -2,7 +2,7 @@
 
 use std::ops::Bound;
 use std::path::Path;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -88,6 +88,8 @@ impl MemTable {
     pub fn put(&self, _key: &[u8], _value: &[u8]) -> Result<()> {
         self.map
             .insert(Bytes::copy_from_slice(_key), Bytes::copy_from_slice(_value));
+        self.approximate_size
+            .fetch_add(_key.len() + _value.len(), Ordering::Relaxed);
         Ok(())
     }
 
@@ -118,8 +120,7 @@ impl MemTable {
     }
 
     pub fn approximate_size(&self) -> usize {
-        self.approximate_size
-            .load(std::sync::atomic::Ordering::Relaxed)
+        self.approximate_size.load(Ordering::Relaxed)
     }
 
     /// Only use this function when closing the database
