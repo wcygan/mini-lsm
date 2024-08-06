@@ -285,16 +285,10 @@ impl LsmStorageInner {
             Arc::clone(&guard)
         }; // drop global lock here
 
-        let value = snapshot
+        let value: Option<Bytes> = snapshot
             .memtable
             .get(_key)
-            .or_else(|| {
-                snapshot
-                    .imm_memtables
-                    .iter()
-                    .rev()
-                    .find_map(|imm| imm.get(_key))
-            })
+            .or_else(|| snapshot.imm_memtables.iter().find_map(|imm| imm.get(_key)))
             .filter(|bytes| !bytes.is_empty());
 
         info!("[GET] key {:?} => {:?}", _key, value);
@@ -315,7 +309,7 @@ impl LsmStorageInner {
     /// Remove a key from the storage by writing an empty value.
     pub fn delete(&self, _key: &[u8]) -> Result<()> {
         // An empty slice (a "tombstone") is written to the storage to delete the key
-        self.write(_key, b"")
+        self.write(_key, &[])
     }
 
     fn write(&self, _key: &[u8], _value: &[u8]) -> Result<()> {
