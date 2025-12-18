@@ -12,6 +12,7 @@ Mini-LSM is a tutorial project for building an LSM (Log-Structured Merge-tree) s
 - **mini-lsm**: Reference solution for weeks 1-2
 - **mini-lsm-mvcc**: Reference solution for week 3 (MVCC)
 - **xtask**: Build automation and course tooling
+- **docs/**: Docusaurus documentation site (uses bun, not cargo)
 
 ## Common Commands
 
@@ -34,6 +35,11 @@ cargo run --bin mini-lsm-cli
 
 # Full CI check (for maintainers)
 cargo x ci
+
+# Documentation (from docs/ directory, uses bun)
+cd docs && bun start      # Dev server
+cd docs && bun run build  # Production build
+cd docs && bun run serve  # Serve built site
 ```
 
 ## Running Tests
