@@ -100,3 +100,19 @@ docs-serve:
 # Install docs dependencies
 docs-install:
     cd docs && bun install
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Book (requires mdbook)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Install mdbook and preprocessors
+book-install:
+    cargo install mdbook mdbook-toc
+
+# Start book dev server with live reload
+book-dev:
+    mdbook serve mini-lsm-book --open --port 3005
+
+# Build book for production
+book-build:
+    mdbook build mini-lsm-book
